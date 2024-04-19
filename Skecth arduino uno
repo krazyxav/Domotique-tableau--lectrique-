@@ -1,0 +1,151 @@
+//#include <Arduino.h>    A décommenter pour IDE plateformIO
+#include <PZEM004Tv30.h>
+#include <PubSubClient.h>
+#include <SPI.h>
+#include <Ethernet.h>
+#include <SoftwareSerial.h>
+#include "OneWire.h"
+#include "DallasTemperature.h"
+
+//nombre de pzem connectés
+#define NUM_PZEMS 3
+
+int PinSwitchEauChaude = 6;
+bool SwitchEauChaudeChanged = false;
+unsigned long previousMillis = millis();
+float pzem_power[3] = {0,0,0};
+float pzem_energy[3] = {0,0,0};
+int TempEau = 0;
+//Mise à jour en deux parties:
+//  - après 2 secondes: envoi des valeurs vers brocker MQTT, EtatMaj=1
+//  - après 4 secondes: lecture des capteurs température et pzems, Réinitialisation de EtatMaj
+int EtatMaj = 0;
+
+//Pin 8: TX pzem , Pin 9: RX pzem
+//Les 3 pzems ont eu leur adresse réglées à 1, 2 et 3
+//grâce au setAdresse de la libriarie PubsubClient
+SoftwareSerial pzemSWSerial(8, 9);
+PZEM004Tv30 pzems[NUM_PZEMS];
+
+//adresse mac et IP de l'ethernet arduino
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress ip(xxx, xxx, xxx, xxx);
+//adresse ip du serveur mqtt (home assistant), remplacer les xxx par
+//l'adresse IP.
+IPAddress server(xxx, xxx, xxx, xxx);
+
+OneWire oneWire(A1);
+DallasTemperature ds(&oneWire);
+
+//traitement du callback avec interprétation du message 
+void callback(char* topic, byte* payload, unsigned int length) {
+  // handle message arrived
+  char message[5]={0x00};
+  for (int i=0;i<length;i++) {
+    //reconstitution du message
+    message[i]=(char)payload[i];
+  }
+  message[length]=0x00;
+
+  //Interprétation message, valeurs de type char
+  if ( strcmp (message, "ON") == 0 ) {
+   digitalWrite(PinSwitchEauChaude,HIGH);
+   Serial.println("relais eau chaude ON");
+   SwitchEauChaudeChanged = true;
+  } else if  ( strcmp (message, "OFF") == 0 ) {
+   digitalWrite(PinSwitchEauChaude,LOW);
+   Serial.println("relais eau chaude OFF");
+   SwitchEauChaudeChanged = true;
+  } else {
+    Serial.println("Message non reconnu");
+  }
+
+} //end void callback
+
+EthernetClient ethClient;
+PubSubClient mqttClient(server, 1883, callback, ethClient);
+
+void setup() {
+  Ethernet.init(10);  //pin CS de la plaquette ethernet
+
+  Serial.begin(9600);
+  while (!Serial) {
+    ; //attente initialisation liaison série
+  }
+
+  Ethernet.begin(mac, ip);
+  delay (1000);
+  Serial.print("Assigned IP: ");
+  Serial.println(Ethernet.localIP());
+
+  ds.begin(); // sonde tempérture activée
+
+  if (mqttClient.connect("consochaudiere","moustique","mosquitto")) {
+    mqttClient.publish("homeassistant/sensor/consoElec/status","online");
+    mqttClient.publish("homeassistant/sensor/tempeau/status","online");
+    mqttClient.publish("homeassistant/switch/eauchaudesw/status","online");
+    mqttClient.subscribe("homeassistant/switch/eauchaudesw/set");
+  }
+
+  for(int i = 0 ; i < NUM_PZEMS; i++){
+    pzems[i] = PZEM004Tv30(pzemSWSerial, 0x01+i);
+  }
+  Serial.println("Setup End");
+
+}
+
+void loop() {
+  //Première partie: lecture et mise à jour de l'état du bouton homeassistant
+  //de commande de l'alimentation du chauffe-eau.  
+  //Les valeurs entre guillemets sont à remplacer par celles utilisées
+  if(mqttClient.connect("système MQTT","nom du brocker","mot de passe du bocker")) {
+
+    if(SwitchEauChaudeChanged == true) {
+      String EtatSwEauChaude = "OFF";
+      if (digitalRead(PinSwitchEauChaude)==HIGH) EtatSwEauChaude = "ON";
+
+      mqttClient.publish("homeassistant/switch/eauchaudesw/state", EtatSwEauChaude.c_str());
+      SwitchEauChaudeChanged=false;
+    }
+    
+    if (millis()-previousMillis>2000 && EtatMaj==0) {
+    
+      mqttClient.publish("homeassistant/sensor/tempeau/state", (String(TempEau).c_str()));
+
+      char topic_consoW[40] = "homeassistant/sensor/consoElecWx/state";
+      char topic_consoWh[40] = "homeassistant/sensor/consoElecWhx/state";
+      
+      for(int i=0 ; i<NUM_PZEMS ; i++) {
+        
+        //modifie le x des topics en i=0 phase A à i=2 phase C
+        topic_consoW[31] = i+65;
+        topic_consoWh[32]= i+65;
+  
+        mqttClient.publish(topic_consoW, (String(pzem_power[i]).c_str()));
+        mqttClient.publish(topic_consoWh,(String(pzem_energy[i]).c_str()));
+      } //end for pzems
+      
+      EtatMaj=1;
+
+    }
+
+    if (millis()-previousMillis>4000) {      
+      // Lecture des valeurs avant publication
+      for(int i=0 ; i<NUM_PZEMS ; i++) {
+        pzem_power[i] = pzems[i].power();
+        pzem_energy[i] = pzems[i].energy();
+      }
+      
+      ds.requestTemperatures();
+      TempEau = ds.getTempCByIndex(0);
+      EtatMaj=0;
+      //Réinitialisation du timer
+      previousMillis = millis();
+    } //end if millis_previousMillis
+    
+  } //end if mqttClient.connect()
+  
+
+  mqttClient.loop();
+
+}//end void loop();
