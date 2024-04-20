@@ -11,15 +11,11 @@ Composition de cette partie:
 
 Fonctionnement:
 Les données de la carte Arduino sont collectées et envoyées au serveur homeAssistant par protocole MQTT.
-Le tableau de bord homeAssistant intègre un bouton pour commande du relais permettant l'alimentation du
-chauffe-eau, ou par traitement automatique suivnat les possbilités de l'installation solaire.
+Le tableau de bord homeAssistant intègre un bouton pour commande du relais permettant l'alimentation du chauffe-eau, ou par traitement automatique suivant la puissance disponible de l'installation solaire.
 
-Chronologie:
-t0: mise à jour de l'état du bouton "chauffe-eau" 
-t0 + 2 secondes: mise à jour homeAssistant de la température d'eau, et infos des Pzems
-t0 + 4 secondes: lecture et mémorisation des infos des capteurs.
+Chronologie dans void loop():
+t0: mise à jour de l'état du bouton "chauffe-eau" si un message a été envoyé depuis homeAssistant.
+t0 + 2 secondes: envoi des informations des capteurs vers homeAssistant
+t0 + 4 secondes: lecture et mémorisation des infos des Pzems et température eau-chaude
 
-Pourquoi avoir scindé?
-Pour une meilleue gestion de l'affichage du bouton de commande du chauffe-eau.
-
-En cours de mise à jour
+En cours de mise à jour.
